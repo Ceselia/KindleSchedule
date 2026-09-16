@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>日程看板</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box;
+    -webkit-user-select: none; user-select: none; }
+html, body { height: 100%; background: #fff; color: #000;
+    font-family: Helvetica, Arial, sans-serif; }
+body { display: flex; flex-direction: column; }
+
+/* 顶部日期栏 —— 与 /calendar 顶栏完全一致：高度100 / 内边距0 28 / 下边框3px，切换页面时分割线与菜单按钮位置不变 */
+#header { flex: 0 0 auto; height: 100px; padding: 0 28px;
+    border-bottom: 3px solid #000;
+    display: flex; align-items: center; justify-content: space-between; }
+#hdate { display: flex; align-items: center; }
+#todayPill { display: inline-flex; align-items: center; height: 48px;
+    font-size: 26px; font-weight: bold; color: #fff; background: #000;
+    border-radius: 980px; padding: 0 22px; margin-left: 20px; }
+#weekday { font-size: 34px; font-weight: bold; margin-right: 16px; }
+#monthday { font-size: 34px; font-weight: bold; }
+.menuBtn { display: inline-flex; align-items: center; height: 64px;
+    font-size: 28px; font-weight: bold; padding: 0 26px;
+    border: 3px solid #000; border-radius: 980px; }
+
+/* 卡片区 */
+#cards { flex: 1 1 auto; overflow: hidden; padding: 24px 28px; }
+.card { border: 3px solid #000; border-radius: 20px;
+    padding: 20px 24px; margin-bottom: 20px; }
+.card .time { font-size: 30px; font-weight: bold; margin-bottom: 8px; }
+.card .title { font-size: 42px; font-weight: bold; line-height: 1.2; }
+.card .note { font-size: 26px; margin-top: 8px; }
+#empty { font-size: 36px; color: #000; text-align: center;
+    margin-top: 80px; }
+
+/* 底部导航 */
+#nav { flex: 0 0 auto; height: 100px; padding: 0 28px;
+    border-top: 3px solid #000;
+    display: flex; align-items: center; justify-content: space-between; }
+.navbtn { display: inline-flex; align-items: center; justify-content: center;
+    width: 96px; height: 64px; font-size: 40px; font-weight: bold;
+    border: 3px solid #000; border-radius: 980px; }
+#dayLabel { font-size: 32px; font-weight: bold; }
+</style>
+</head>
+<body oncontextmenu="return false" ondragstart="return false">
+<div id="header">
+  <div id="hdate">
+    <span id="weekday"></span>
+    <span id="monthday"></span>
+    <span id="todayPill">今天</span>
+  </div>
+  <span id="toCal" class="menuBtn">日历</span>
+</div>
+
+<div id="cards"></div>
+<div id="nav">
+  <div class="navbtn" id="prev">&lt;</div>
+  <div id="dayLabel">第 1 天</div>
+  <div class="navbtn" id="next">&gt;</div>
+</div>
+<script type="text/javascript">
+(function () {
+  var currentOffset = 0;   // 相对今天的天数偏移
+  var allData = [];        // 最近一次拉取的全部日程
+  var pollMs = 30000;      // 默认轮询间隔
+  var retryTimer = null;   // 断网快速重试定时器
+  var WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+  function pad(n) { return n < 10 ? '0' + n : '' + n; }
+
+  function targetDate() {
+    var t = new Date();
+    return new Date(t.getFullYear(), t.getMonth(), t.getDate() + currentOffset);
+  }
+  function dateStr(d) {
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+
+  function render() {
+    var d = targetDate();
+    var ds = dateStr(d);
+    document.getElementById('weekday').innerHTML = WEEK[d.getDay()];
+    document.getElementById('monthday').innerHTML = (d.getMonth() + 1) + '月' + d.getDate() + '日';
+    document.getElementById('todayPill').style.display = currentOffset === 0 ? 'inline-flex' : 'none';
+    document.getElementById('dayLabel').innerHTML = '第 ' + (currentOffset + 1) + ' 天';
+
+    var list = [];
+    for (var i = 0; i < allData.length; i++) {
+      if (allData[i].date === ds) list.push(allData[i]);
+    }
+
+    var html = '';
+    if (list.length === 0) {
+      html = '<div id="empty">今日无日程</div>';
+    } else {
+      for (var j = 0; j < list.length; j++) {
+        var s = list[j];
+        html += '<div class="card">';
+        html += '<div class="time">' + (s.time ? s.time : '全天') + '</div>';
+        html += '<div class="title">' + escapeHtml(s.title) + '</div>';
+        if (s.note) html += '<div class="note">' + escapeHtml(s.note) + '</div>';
+        html += '</div>';
+      }
+    }
+    document.getElementById('cards').innerHTML = html;
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function load() {
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '/api/schedules', true);
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState === 4) {
+        if (xhr.status === 200) {
+          try { allData = JSON.parse(xhr.responseText) || []; render(); } catch (e) {}
+        } else {
+          scheduleRetry();   // 断网 / 服务器错误：稍后快速重试
+        }
+      }
+    };
+    xhr.onerror = scheduleRetry;
+    xhr.send();
+  }
+
+  // 拉取失败时 5 秒后重试，Wi-Fi 恢复后能尽快拿到最新日程（不依赖 online 事件，兼容旧 Kindle）
+  function scheduleRetry() {
+    if (retryTimer) return;
+    retryTimer = setTimeout(function () { retryTimer = null; load(); }, 5000);
+  }
+
+  function loadConfig() {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '/api/config', true);
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState === 4 && xhr.status === 200) {
+        try {
+          var c = JSON.parse(xhr.responseText);
+          if (c && c.pollInterval) pollMs = c.pollInterval * 1000;
+        } catch (e) {}
+        start();
+      }
+    };
+    xhr.onerror = start;
+    xhr.send();
+  }
+
+  function goPrev() { if (currentOffset > 0) { currentOffset--; render(); } }
+  function goNext() { currentOffset++; render(); }
+
+  var startX = 0;
+  document.addEventListener('touchstart', function (e) {
+    startX = e.changedTouches[0].clientX;
+  }, false);
+  document.addEventListener('touchend', function (e) {
+    var dx = e.changedTouches[0].clientX - startX;
+    if (dx < -80) goNext();       // 左滑 -> 下一天
+    else if (dx > 80) goPrev();   // 右滑 -> 上一天
+  }, false);
+
+  document.getElementById('prev').onclick = goPrev;
+  document.getElementById('next').onclick = goNext;
+  document.getElementById('toCal').onclick = function(){ location.href = '/calendar'; };
+
+  function start() {
+    load();
+    setInterval(load, pollMs);
+    // 断网重连 / 页面重新可见时立即拉取最新（旧 Kindle 可能不支持，失败重试兜底）
+    if (window.addEventListener) {
+      window.addEventListener('online', load, false);
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) load();
+      }, false);
+    }
+  }
+
+  loadConfig();
+})();
+</script>
+</body>
+</html>

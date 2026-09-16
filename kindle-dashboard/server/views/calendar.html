@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>日程日历</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box;
+    -webkit-user-select: none; user-select: none; }
+html, body { height: 100%; background: #fff; color: #000;
+    font-family: Helvetica, Arial, sans-serif; }
+body { display: flex; flex-direction: column; }
+
+/* 月份栏 —— 与 /dashboard 顶栏完全一致：高度100 / 内边距0 28 / 下边框3px，切换页面时分割线与菜单按钮位置不变 */
+#mhead { flex: 0 0 auto; height: 100px; padding: 0 28px;
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 3px solid #000; }
+#mnav { display: flex; align-items: center; }
+#mlabel { font-size: 40px; font-weight: bold; margin: 0 18px;
+    min-width: 220px; text-align: center; }
+.mbtn { display: inline-flex; align-items: center; justify-content: center;
+    width: 76px; height: 64px; font-size: 40px; font-weight: bold;
+    border: 3px solid #000; border-radius: 980px; }
+.menuBtn { display: inline-flex; align-items: center; height: 64px;
+    font-size: 28px; font-weight: bold; padding: 0 26px;
+    border: 3px solid #000; border-radius: 980px; }
+
+/* 星期表头 */
+#wrow { flex: 0 0 auto; display: flex; border-bottom: 2px solid #000; }
+#wrow div { flex: 1; text-align: center; font-size: 28px; font-weight: bold;
+    padding: 8px 0; }
+
+/* 日期网格 */
+#grid { flex: 1 1 auto; border-collapse: collapse; width: 100%; }
+#grid td { border: 2px solid #000; width: 14.28%; height: 110px;
+    vertical-align: top; padding: 3px 4px; overflow: hidden; }
+#grid td.blank { background: #f2f2f2; border-color: #ccc; }
+.dnum { font-size: 30px; font-weight: bold; }
+.dnum.today { background: #000; color: #fff; border-radius: 980px;
+    padding: 0 12px; display: inline-block; }
+.ditem { font-size: 24px; line-height: 1.2; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+.dmore { font-size: 22px; font-weight: bold; }
+
+/* 当天详情视图 */
+#dayView { display: none; flex-direction: column; height: 100%; }
+#dhead { flex: 0 0 auto; height: 100px; padding: 0 28px;
+    display: flex; align-items: center; border-bottom: 3px solid #000; }
+#backBtn { display: inline-flex; align-items: center; height: 64px;
+    font-size: 32px; font-weight: bold; padding: 0 24px; margin-right: 18px;
+    border: 3px solid #000; border-radius: 980px; }
+#dtitle { font-size: 40px; font-weight: bold; }
+#dcards { flex: 1 1 auto; overflow: hidden; padding: 22px 26px; }
+.card { border: 3px solid #000; border-radius: 20px; padding: 20px 24px;
+    margin-bottom: 20px; }
+.card .time { font-size: 34px; font-weight: bold; margin-bottom: 8px; }
+.card .title { font-size: 50px; font-weight: bold; line-height: 1.2; }
+.card .note { font-size: 32px; margin-top: 8px; }
+#dempty { font-size: 42px; text-align: center; margin-top: 70px; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body oncontextmenu="return false" ondragstart="return false">
+<div id="monthView" style="display:flex;flex-direction:column;height:100%;">
+  <div id="mhead">
+    <div id="mnav">
+      <div class="mbtn" id="prevM">&lt;</div>
+      <div id="mlabel"></div>
+      <div class="mbtn" id="nextM">&gt;</div>
+    </div>
+    <div class="menuBtn" id="toDash">看板</div>
+  </div>
+  <div id="wrow">
+    <div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div><div>日</div>
+  </div>
+  <table id="grid"><tbody id="gbody"></tbody></table>
+</div>
+
+<div id="dayView">
+  <div id="dhead">
+    <div id="backBtn">&lt; 返回</div>
+    <div id="dtitle"></div>
+  </div>
+  <div id="dcards"></div>
+</div>
+<script type="text/javascript">
+(function () {
+  var now = new Date();
+  var viewY = now.getFullYear();
+  var viewM = now.getMonth();          // 0-based
+  var byDate = {};                     // 'YYYY-MM-DD' -> [items]
+  var todayStr = fmt(now.getFullYear(), now.getMonth(), now.getDate());
+  var lastSig = null;                  // 上次渲染的数据+今天签名，用于避免墨水屏无谓刷新
+  var pollMs = 30000;                  // 轮询间隔（含跨天检测）
+  var retryTimer = null;               // 断网快速重试定时器
+
+  function pad(n){ return n<10?'0'+n:''+n; }
+  function fmt(y,m,d){ return y+'-'+pad(m+1)+'-'+pad(d); }
+  function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function cut(s,n){ s=String(s); return s.length>n? s.substring(0,n)+'…': s; }
+
+  function loadMonth(force){
+    if(retryTimer){ clearTimeout(retryTimer); retryTimer=null; }
+    var mm = viewY+'-'+pad(viewM+1);
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET','/api/schedules?month='+mm,true);
+    xhr.onreadystatechange = function(){
+      if(xhr.readyState===4){
+        var map={}, sig='';
+        if(xhr.status===200){
+          try{
+            var rows = JSON.parse(xhr.responseText)||[];
+            sig = xhr.responseText;
+            for(var i=0;i<rows.length;i++){
+              (map[rows[i].date]=map[rows[i].date]||[]).push(rows[i]);
+            }
+          }catch(e){ return; }   // 解析失败保留上次渲染，不刷新
+        } else { scheduleRetry(force); return; }   // 断网/服务器错误：稍后快速重试
+        byDate = map;
+        // 仅在强制刷新、数据变化或跨天时重绘（todayStr 计入签名）
+        var sigKey = mm+'|'+todayStr+'|'+sig;
+        if(force || sigKey !== lastSig){
+          lastSig = sigKey;
+          document.getElementById('mlabel').innerHTML = viewY+'年'+(viewM+1)+'月';
+          renderGrid();
+        }
+      }
+    };
+    xhr.onerror = function(){ scheduleRetry(force); };
+    xhr.send();
+  }
+
+  // 拉取失败时 5 秒后重试，Wi-Fi 恢复后能尽快拿到最新（不依赖 online 事件，兼容旧 Kindle）
+  function scheduleRetry(force){
+    if(retryTimer) return;
+    retryTimer = setTimeout(function(){ retryTimer=null; loadMonth(force); }, 5000);
+  }
+  function renderGrid(){
+    var first = new Date(viewY, viewM, 1);
+    var lead = (first.getDay()+6)%7;              // 周一为第一列
+    var daysIn = new Date(viewY, viewM+1, 0).getDate();
+    var cells = [];
+    for(var i=0;i<lead;i++) cells.push(null);
+    for(var d=1; d<=daysIn; d++) cells.push(d);
+    while(cells.length % 7 !== 0) cells.push(null);
+
+    var html='';
+    for(var r=0; r<cells.length; r+=7){
+      html+='<tr>';
+      for(var c=0;c<7;c++){
+        var day=cells[r+c];
+        if(day===null){ html+='<td class="blank"></td>'; continue; }
+        var ds=fmt(viewY,viewM,day);
+        var items=byDate[ds]||[];
+        var numCls='dnum'+(ds===todayStr?' today':'');
+        var inner='<div class="'+numCls+'">'+day+'</div>';
+        for(var k=0;k<items.length && k<2;k++){
+          inner+='<div class="ditem">'+esc(cut(items[k].title,4))+'</div>';
+        }
+        if(items.length>2) inner+='<div class="dmore">+'+(items.length-2)+'</div>';
+        var attr = items.length? ' data-date="'+ds+'"' : '';
+        html+='<td'+attr+'>'+inner+'</td>';
+      }
+      html+='</tr>';
+    }
+    document.getElementById('gbody').innerHTML = html;
+  }
+  function showDay(ds){
+    var items = byDate[ds]||[];
+    var parts = ds.split('-');
+    var dd = new Date(+parts[0], +parts[1]-1, +parts[2]);
+    var wk = ['周日','周一','周二','周三','周四','周五','周六'][dd.getDay()];
+    document.getElementById('dtitle').innerHTML = (+parts[1])+'月'+(+parts[2])+'日 '+wk;
+    var html='';
+    if(!items.length){ html='<div id="dempty">今日无日程</div>'; }
+    else{
+      for(var i=0;i<items.length;i++){
+        var s=items[i];
+        html+='<div class="card"><div class="time">'+(s.time?s.time:'全天')+'</div>';
+        html+='<div class="title">'+esc(s.title)+'</div>';
+        if(s.note) html+='<div class="note">'+esc(s.note)+'</div>';
+        html+='</div>';
+      }
+    }
+    document.getElementById('dcards').innerHTML = html;
+    document.getElementById('monthView').style.display='none';
+    document.getElementById('dayView').style.display='flex';
+  }
+
+  function backToMonth(){
+    document.getElementById('dayView').style.display='none';
+    document.getElementById('monthView').style.display='flex';
+  }
+
+  function prevMonth(){ viewM--; if(viewM<0){viewM=11;viewY--;} loadMonth(true); }
+  function nextMonth(){ viewM++; if(viewM>11){viewM=0;viewY++;} loadMonth(true); }
+
+  document.getElementById('prevM').onclick = prevMonth;
+  document.getElementById('nextM').onclick = nextMonth;
+  document.getElementById('backBtn').onclick = backToMonth;
+  document.getElementById('toDash').onclick = function(){ location.href = '/dashboard'; };
+
+  // 事件委托：点击有日程的日期格进入详情
+  document.getElementById('gbody').onclick = function(e){
+    var t = e.target || e.srcElement;
+    while(t && t.tagName !== 'TD') t = t.parentNode;
+    if(t && t.getAttribute && t.getAttribute('data-date')){
+      showDay(t.getAttribute('data-date'));
+    }
+  };
+
+  // 跨天检测 + 定时刷新：常驻不重载页面也能每过一天回到当天
+  function currentDayStr(){ var n=new Date(); return fmt(n.getFullYear(), n.getMonth(), n.getDate()); }
+
+  function tick(){
+    var real = currentDayStr();
+    if(real !== todayStr){
+      // 跨天：更新今天，跳回当前月的月历视图，确保首页显示当天日程
+      todayStr = real;
+      var n = new Date();
+      viewY = n.getFullYear();
+      viewM = n.getMonth();
+      backToMonth();
+      loadMonth(true);
+    } else {
+      // 未跨天：刷新当前所视月份（仅数据变化时重绘）
+      loadMonth(false);
+    }
+  }
+
+  function start(){
+    loadMonth(true);
+    setInterval(tick, pollMs);
+    // 断网重连 / 页面重新可见时立即刷新（含跨天检测；旧 Kindle 不支持则由失败重试兜底）
+    if(window.addEventListener){
+      window.addEventListener('online', tick, false);
+      document.addEventListener('visibilitychange', function(){
+        if(!document.hidden) tick();
+      }, false);
+    }
+  }
+
+  // 先取轮询间隔，再启动
+  var cfg = new XMLHttpRequest();
+  cfg.open('GET','/api/config',true);
+  cfg.onreadystatechange = function(){
+    if(cfg.readyState===4){
+      if(cfg.status===200){
+        try{ var c=JSON.parse(cfg.responseText); if(c&&c.pollInterval) pollMs=c.pollInterval*1000; }catch(e){}
+      }
+      start();
+    }
+  };
+  cfg.onerror = start;
+  cfg.send();
+})();
+</script>
+</body>
+</html>

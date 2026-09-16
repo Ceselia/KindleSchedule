@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>新增日程</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #f2f2f7; color: #000;
+  font-family: -apple-system, Helvetica, Arial, sans-serif;
+  padding: 20px; font-size: 18px; }
+h1 { font-size: 26px; margin-bottom: 20px; text-align: center; }
+
+/* 模式切换药丸 */
+.tabs { display: flex; background: #e5e5ea; border-radius: 980px;
+  padding: 4px; margin-bottom: 20px; }
+.tab { flex: 1; text-align: center; padding: 12px 0; font-size: 18px;
+  border-radius: 980px; color: #000; }
+.tab.active { background: #fff; font-weight: bold; }
+
+.card { background: #fff; border-radius: 16px; padding: 18px;
+  margin-bottom: 18px; }
+label { display: block; font-size: 15px; color: #666; margin-bottom: 6px; }
+input, textarea { width: 100%; font-size: 20px; border: none;
+  border-bottom: 1px solid #e5e5ea; padding: 10px 0; margin-bottom: 16px;
+  background: transparent; -webkit-appearance: none; }
+input:last-child, textarea:last-child { margin-bottom: 0; }
+textarea { min-height: 90px; resize: none; }
+
+.examples { display: flex; flex-wrap: wrap; margin-bottom: 14px; }
+.ex { background: #e5e5ea; border-radius: 980px; padding: 8px 16px;
+  margin: 0 8px 8px 0; font-size: 15px; }
+
+.btn { width: 100%; background: #000; color: #fff; font-size: 22px;
+  font-weight: bold; border: none; border-radius: 14px; padding: 16px;
+  margin-top: 4px; }
+
+#toast { position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%);
+  background: rgba(0,0,0,0.85); color: #fff; padding: 14px 26px;
+  border-radius: 12px; font-size: 18px; display: none; }
+.hidden { display: none; }
+</style>
+</head>
+<body>
+<h1>新增日程</h1>
+
+<div class="tabs">
+  <div class="tab active" id="tabNl">一句话</div>
+  <div class="tab" id="tabForm">填表单</div>
+</div>
+
+<!-- 自然语言模式 -->
+<div id="modeNl">
+  <div class="card">
+    <label>说一句话，例如「明天下午3点 张医生复查」</label>
+    <textarea id="rawInput" placeholder="输入日程..."></textarea>
+  </div>
+  <div class="examples" id="examples"></div>
+  <button class="btn" id="submitNl">添加日程</button>
+</div>
+
+<!-- 表单模式 -->
+<div id="modeForm" class="hidden">
+  <div class="card">
+    <label>日期</label>
+    <input type="date" id="fDate">
+    <label>时间（可留空表示全天）</label>
+    <input type="time" id="fTime">
+    <label>标题</label>
+    <input type="text" id="fTitle" placeholder="如 张医生复查">
+    <label>备注</label>
+    <input type="text" id="fNote" placeholder="可选">
+  </div>
+  <button class="btn" id="submitForm">添加日程</button>
+</div>
+
+<div id="toast"></div>
+<script type="text/javascript">
+(function () {
+  var EXAMPLES = ['明天下午3点 张医生复查', '周五 下午2点 接孙子',
+    '10月20号上午10点 买菜', '今天晚上8点 吃药'];
+
+  // 示例标签
+  var exBox = document.getElementById('examples');
+  for (var i = 0; i < EXAMPLES.length; i++) {
+    (function (txt) {
+      var span = document.createElement('span');
+      span.className = 'ex';
+      span.innerHTML = txt;
+      span.onclick = function () { document.getElementById('rawInput').value = txt; };
+      exBox.appendChild(span);
+    })(EXAMPLES[i]);
+  }
+
+  // 模式切换
+  var tabNl = document.getElementById('tabNl');
+  var tabForm = document.getElementById('tabForm');
+  tabNl.onclick = function () {
+    tabNl.className = 'tab active'; tabForm.className = 'tab';
+    document.getElementById('modeNl').className = '';
+    document.getElementById('modeForm').className = 'hidden';
+  };
+  tabForm.onclick = function () {
+    tabForm.className = 'tab active'; tabNl.className = 'tab';
+    document.getElementById('modeForm').className = '';
+    document.getElementById('modeNl').className = 'hidden';
+  };
+
+  function toast(msg) {
+    var t = document.getElementById('toast');
+    t.innerHTML = msg;
+    t.style.display = 'block';
+    setTimeout(function () { t.style.display = 'none'; }, 2500);
+  }
+
+  function post(payload, onDone) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/schedules', true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState === 4) {
+        var ok = false, res = null;
+        try { res = JSON.parse(xhr.responseText); ok = res && res.success; } catch (e) {}
+        if (ok) {
+          var s = res.schedule;
+          toast('已添加：' + s.date + ' ' + (s.time || '全天') + ' ' + s.title);
+          onDone();
+        } else {
+          toast('添加失败：' + (res && res.error ? res.error : '请重试'));
+        }
+      }
+    };
+    xhr.send(JSON.stringify(payload));
+  }
+
+  document.getElementById('submitNl').onclick = function () {
+    var raw = document.getElementById('rawInput').value.trim();
+    if (!raw) { toast('请先输入内容'); return; }
+    post({ raw: raw }, function () { document.getElementById('rawInput').value = ''; });
+  };
+
+  document.getElementById('submitForm').onclick = function () {
+    var date = document.getElementById('fDate').value;
+    var title = document.getElementById('fTitle').value.trim();
+    if (!date || !title) { toast('请填写日期和标题'); return; }
+    post({
+      date: date,
+      time: document.getElementById('fTime').value || null,
+      title: title,
+      note: document.getElementById('fNote').value.trim() || null
+    }, function () {
+      document.getElementById('fTitle').value = '';
+      document.getElementById('fNote').value = '';
+    });
+  };
+})();
+</script>
+</body>
+</html>
