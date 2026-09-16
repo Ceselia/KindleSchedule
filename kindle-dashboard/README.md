@@ -1,112 +1,100 @@
-# Kindle 霸屏日程看板
+# Kindle 霸屏日程看板（Cloudflare Workers + D1）
 
-将越狱 Kindle 改造为常驻显示的日程看板。家人用微信或网页发一句话即可新增日程，Kindle 端自动解析并以 Apple 风格卡片展示，支持左右滑动切换日期，并提供月历汇总页可翻查任意一天。
+将越狱 Kindle 改造为常驻显示的日程看板。家人用微信或网页发一句话即可新增日程，Kindle 端自动解析并以 Apple 风格卡片展示，支持左右滑动切换日期，并提供月历汇总页。后端运行在 Cloudflare Workers，数据存 Cloudflare D1。
 
 ## 目录结构
 
 ```
 kindle-dashboard/
-├── server/                Node.js 服务端
-│   ├── package.json       依赖 (express + better-sqlite3 + xml2js)
-│   ├── config.js          端口 / 轮询间隔 / 微信 Token
-│   ├── parser.js          自然语言解析（node parser.js 可自测）
-│   ├── db.js              SQLite 数据访问
-│   ├── server.js          主服务（微信回调 + REST API + 页面托管）
+├── wrangler.toml          Cloudflare 配置（D1 绑定 + vars + Text 规则）
+├── package.json           wrangler 依赖 + 脚本
+├── schema.sql             D1 建表
+├── src/
+│   ├── index.js           Worker 入口（路由：页面 + API + 微信）
+│   ├── parser.js          自然语言解析（ESM）
+│   ├── db.js              D1 数据访问
+│   ├── wechat.js          微信签名(WebCrypto) + XML + 话术
+│   ├── time.js            时区工具（Asia/Shanghai 求今天）
 │   └── views/
-│       ├── dashboard.html Kindle 单日看板（默认常驻页）
-│       ├── calendar.html  月历汇总页（点某天展开当天详情）
-│       └── add.html       手机端添加页（仅测试用）
-├── kindle/
-│   ├── kiosk.sh           霸屏启动脚本
-│   └── recover.sh         恢复桌面脚本
-├── 测试流程.md            本地 demo 全流程测试
-├── 测试方法.md            日历页测试与边界用例
-├── 正式部署.md            接入公众号的正式部署（公网/nginx/HTTPS）
+│       ├── dashboard.html 单日看板（默认常驻页）
+│       ├── calendar.html  月历汇总页
+│       └── add.html       手机端添加页（测试用）
+├── kindle/                kiosk.sh / recover.sh
+├── 测试流程.md / 测试方法.md / 正式部署.md
 └── README.md
 ```
 
-## 一、启动服务端
+## 一、本地开发（wrangler dev + 本地 D1）
 
 ```bash
-cd server
 npm install
-node server.js
+# 首次：创建 D1 数据库，把输出的 database_id 填进 wrangler.toml
+npx wrangler d1 create kindle-dashboard
+# 本地建表
+npm run db:init:local
+# 启动本地开发服务器（默认 http://localhost:8787）
+npm run dev
 ```
 
-> 需 Node.js >= 14。依赖 `better-sqlite3` 为原生模块，Node 新版本请用 `^13`（本项目已锁定）。
-> 若本机 node 装在 `~/node` 未加入全局 PATH，启动前先执行 `export PATH="$HOME/node/bin:$PATH"`。
+页面入口（本地端口 8787）：
 
-启动后访问：
+- 单日看板：`/dashboard`　月历页：`/calendar`　添加页（测试用）：`/add`
+- 微信回调：`/wechat`　配置：`/api/config`
 
-- 单日看板（Kindle 常驻默认页）：`http://<服务器IP>:3000/dashboard`
-- 月历汇总页：`http://<服务器IP>:3000/calendar`
-- 添加页（手机测试用）：`http://<服务器IP>:3000/add`
-- 微信回调：`http://<服务器IP>:3000/wechat`
+## 二、部署到 Cloudflare
 
-两个展示页右上角有互相跳转的菜单按钮（看板 ⇄ 日历）。
+```bash
+# 远程 D1 建表（首次）
+npm run db:init:remote
+# 部署 Worker
+npm run deploy
+```
 
-验证解析器：`node parser.js`（打印内置 7 个示例的通过情况，预期 7/7）。
+也可把仓库推到 GitHub，在 Cloudflare 控制台的 Workers 里连接该仓库开启自动部署，或用 GitHub Actions 调 `cloudflare/wrangler-action`。部署后 Worker 自带 HTTPS 域名。详见 `正式部署.md`。
 
-## 二、配置微信公众号
+## 三、配置微信公众号
 
-在公众号后台「开发 → 基本配置 → 服务器配置」填写：
+后台「开发 → 基本配置 → 服务器配置」：
 
-- URL：`http://<公网地址>/wechat`（微信只接受 80/443 端口，本地 `localhost:3000` 微信访问不到）
-- Token：与 `config.js` 中 `wechat.token` 一致（默认 `kindle_dashboard_token`）
-- 消息加解密方式：**明文模式**（后端按明文 XML 解析，选加密模式会失败）
+- URL：`https://<worker域名>/wechat`
+- Token：与 `wrangler.toml` 中 `WECHAT_TOKEN` 一致
+- 消息加解密方式：**明文模式**
 
-> 完整的公网/nginx/HTTPS 部署步骤见 `正式部署.md`。本地仅测试可用 curl 模拟微信回调，见 `测试流程.md`。
-
-家人在公众号内发消息即可新增日程，例如：
+家人发消息即可新增日程（GET 与 POST 回调均已做 SHA1 签名校验）：
 
 ```
 明天下午3点 张医生复查
 10月20号上午10点 买菜  带环保袋
 ```
 
-> 备注需用「两个空格」或「逗号」与标题分隔。
+> 备注需用「两个空格」或「逗号」与标题分隔。公众号按场景自动回复：关注→欢迎+引导；成功→「已为您创建日程「9月17日 周四 15:00 张医生复查」」；无法识别/非文字→引导话术。
 
-公众号会按场景自动回复：关注时发欢迎+引导语；正常创建回「已为您创建日程「9月17日 周四 15:00 张医生复查」」；无法识别或发来非文字消息时回引导话术。
-
-## 三、部署 Kindle 端
-
-1. 编辑 `kindle/kiosk.sh`，把 `SERVER_URL` 改成你的展示页地址。
-2. 通过 SSH/USB 把脚本传到 Kindle（如 `/mnt/us/`）。
-3. SSH 执行：`sh /mnt/us/kiosk.sh`。
-
-退出霸屏：SSH 执行 `sh /mnt/us/recover.sh`；兜底方案为长按电源键约 40 秒强制重启。
-
-## 四、OTA 更新
-
-| 更新对象 | 操作 | 生效延迟 |
-|---------|------|---------|
-| 日程内容 | 微信发消息 / `/add` 提交 | 30 秒内 |
-| 页面布局 / 交互 | 改 `views/dashboard.html`、`views/calendar.html` | 刷新即生效（静态文件） |
-| 解析规则 | 改 `parser.js` 后重启服务 | 即时 |
-| 轮询间隔 | 改 `config.js` 后重启服务 | 即时 |
-
-Kindle 端是纯展示终端，改服务端后无需在 Kindle 上做任何操作。日历页会在每 30 秒轮询时刷新数据，跨天后自动回到当前月并高亮今天。
-
-## 五、API
+## 四、API
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/schedules` | 今日及以后全部；支持 `?date=YYYY-MM-DD`、`?days=N`、`?month=YYYY-MM`（整月，含过去日期） |
+| GET | `/api/schedules` | 今日及以后；支持 `?date=YYYY-MM-DD`、`?days=N`、`?month=YYYY-MM`（整月，含过去） |
 | POST | `/api/schedules` | body `{raw}` 走解析，或 `{date,time,title,note}` |
 | DELETE | `/api/schedules/:id` | 删除 |
 | PUT | `/api/schedules/:id/done` | 标记完成 |
 | GET | `/api/config` | 返回 `{pollInterval}` |
 
-## 六、已知限制
+## 五、Kindle 端
 
-- 解析器不支持「下个月」「年底」等复杂语义，请改用表单模式。
-- 绝对日期若已过当天，会自动顺延到明年（有意设计）。
-- Kindle 浏览器基于旧版 WebKit，前端使用 ES5 + XMLHttpRequest + Flexbox，不引入任何框架。
-- Kiosk 模式非持久化，Kindle 重启后需重新执行 `kiosk.sh`（开机自启见脚本内注释）。
-- 安全：`GET /wechat` 已做签名校验，但 `POST /wechat` 暂未校验签名；正式上线前建议补上并启用 HTTPS（见 `正式部署.md`）。
+编辑 `kindle/kiosk.sh` 的 `SERVER_URL` 为 `https://<worker域名>/dashboard`，SSH 传到 Kindle 执行 `sh /mnt/us/kiosk.sh`；退出 `sh /mnt/us/recover.sh`。两个展示页右上角可互相跳转，Wi-Fi 断连恢复后会自动重新拉取最新日程。
 
-## 七、相关文档
+## 六、配置与环境变量（wrangler.toml [vars]）
 
-- `测试流程.md`：本地 demo 全流程测试（解析器 / API / 微信话术 / 两个页面）。
-- `测试方法.md`：日历汇总页测试与边界用例。
-- `正式部署.md`：接入公众号的正式部署（公网地址 / nginx / HTTPS / 安全加固）。
+| 变量 | 说明 | 默认 |
+|------|------|------|
+| WECHAT_TOKEN | 微信服务器配置 Token | kindle_dashboard_token |
+| POLL_INTERVAL | 前端轮询间隔（秒） | 30 |
+| TIMEZONE | 计算"今天"的时区 | Asia/Shanghai |
+
+## 七、已知限制
+
+- 解析器不支持「下个月」「年底」等复杂语义，请用表单模式。
+- 绝对日期若已过当天，自动顺延到明年（有意设计）。
+- Kindle 旧版 WebKit：前端用 ES5 + XMLHttpRequest + Flexbox，无框架。
+- 改 HTML/代码后需 `wrangler dev` 重载或 `wrangler deploy` 才生效（不再是改文件即时刷新）。
+- Kiosk 非持久化，Kindle 重启需重新执行 `kiosk.sh`。
