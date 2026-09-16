@@ -115,8 +115,9 @@ body { display: flex; flex-direction: column; }
               (map[rows[i].date]=map[rows[i].date]||[]).push(rows[i]);
             }
           }catch(e){ return; }   // 解析失败保留上次渲染，不刷新
-        } else { scheduleRetry(force); return; }   // 断网/服务器错误：稍后快速重试
+        } else { scheduleRetry(force); if(force) fillFromCache(mm); return; }   // 断网：重试 + 显示离线前缓存
         byDate = map;
+        saveCache(mm);           // 缓存本月最新，供断网/刷新后显示
         // 仅在强制刷新、数据变化或跨天时重绘（todayStr 计入签名）
         var sigKey = mm+'|'+todayStr+'|'+sig;
         if(force || sigKey !== lastSig){
@@ -126,7 +127,7 @@ body { display: flex; flex-direction: column; }
         }
       }
     };
-    xhr.onerror = function(){ scheduleRetry(force); };
+    xhr.onerror = function(){ scheduleRetry(force); if(force) fillFromCache(mm); };
     xhr.send();
   }
 
@@ -134,6 +135,23 @@ body { display: flex; flex-direction: column; }
   function scheduleRetry(force){
     if(retryTimer) return;
     retryTimer = setTimeout(function(){ retryTimer=null; loadMonth(force); }, 5000);
+  }
+
+  // 本地缓存：断网（含刷新/重启后）仍显示离线前最新日程
+  function saveCache(mm){
+    try{ if(window.localStorage) localStorage.setItem('kd_cal_'+mm, JSON.stringify(byDate)); }catch(e){}
+  }
+  function fillFromCache(mm){
+    try{
+      if(window.localStorage){
+        var s=localStorage.getItem('kd_cal_'+mm);
+        if(s){
+          byDate=JSON.parse(s)||{};
+          document.getElementById('mlabel').innerHTML = viewY+'年'+(viewM+1)+'月';
+          renderGrid();
+        }
+      }
+    }catch(e){}
   }
   function renderGrid(){
     var first = new Date(viewY, viewM, 1);

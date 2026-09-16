@@ -119,7 +119,7 @@ body { display: flex; flex-direction: column; }
     xhr.onreadystatechange = function () {
       if (xhr.readyState === 4) {
         if (xhr.status === 200) {
-          try { allData = JSON.parse(xhr.responseText) || []; render(); } catch (e) {}
+          try { allData = JSON.parse(xhr.responseText) || []; render(); saveCache(); } catch (e) {}
         } else {
           scheduleRetry();   // 断网 / 服务器错误：稍后快速重试
         }
@@ -133,6 +133,19 @@ body { display: flex; flex-direction: column; }
   function scheduleRetry() {
     if (retryTimer) return;
     retryTimer = setTimeout(function () { retryTimer = null; load(); }, 5000);
+  }
+
+  // 本地缓存：断网（含刷新/重启后）仍显示离线前最新日程
+  function saveCache() {
+    try { if (window.localStorage) localStorage.setItem('kd_schedules', JSON.stringify(allData)); } catch (e) {}
+  }
+  function loadCache() {
+    try {
+      if (window.localStorage) {
+        var s = localStorage.getItem('kd_schedules');
+        if (s) { allData = JSON.parse(s) || []; render(); }
+      }
+    } catch (e) {}
   }
 
   function loadConfig() {
@@ -169,6 +182,7 @@ body { display: flex; flex-direction: column; }
   document.getElementById('toCal').onclick = function(){ location.href = '/calendar'; };
 
   function start() {
+    loadCache();   // 先显示上次缓存（离线也有内容），再拉网络
     load();
     setInterval(load, pollMs);
     // 断网重连 / 页面重新可见时立即拉取最新（旧 Kindle 可能不支持，失败重试兜底）

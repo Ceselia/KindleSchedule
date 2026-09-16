@@ -81,7 +81,9 @@ npm run deploy
 
 ## 五、Kindle 端
 
-编辑 `kindle/kiosk.sh` 的 `SERVER_URL` 为 `https://<worker域名>/dashboard`，SSH 传到 Kindle 执行 `sh /mnt/us/kiosk.sh`；退出 `sh /mnt/us/recover.sh`。两个展示页右上角可互相跳转，Wi-Fi 断连恢复后会自动重新拉取最新日程。
+编辑 `kindle/kiosk.sh` 的 `SERVER_URL` 为 `https://<worker域名>/dashboard`，SSH 传到 Kindle 执行 `sh /mnt/us/kiosk.sh`；退出 `sh /mnt/us/recover.sh`。两个展示页右上角可互相跳转。
+
+**断网韧性**：拉取失败每 5 秒自动重试，并监听 `online`/`visibilitychange`，Wi-Fi 恢复后立即重新拉取最新日程；同时用 localStorage 缓存最近一次数据，**断网时（含刷新/重启后）仍显示离线前最新的日程**，联网后自动覆盖为最新。
 
 ## 六、配置与环境变量（wrangler.toml [vars]）
 
